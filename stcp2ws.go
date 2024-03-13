@@ -26,6 +26,10 @@ import (
 	"github.com/miekg/dns"
 )
 
+const (
+	HEART_BEAT_INTERVAL = 90
+)
+
 type tcp2wsSparkle struct {
 	isUdp   bool
 	udpConn *net.UDPConn
@@ -250,7 +254,7 @@ func readWs2Tcp(uuid string) bool {
 			if t == websocket.TextMessage {
 				msg := string(buf)
 				if msg == "tcp2wsSparkle" {
-					log.Print(uuid, " 咩")
+					log.Print(uuid, " heartbeat")
 					continue
 				} else if msg == "tcp2wsSparkleClose" {
 					log.Print(uuid, " say bye")
@@ -686,7 +690,7 @@ func main() {
 	arg_num := len(os.Args)
 
 	if arg_num < 2 {
-		fmt.Println("TCP over WebSocket (tcp2ws) with UDP support 11.1\nhttps://github.com/zanjie1999/tcp-over-websocket")
+		fmt.Println("TCP/UDP Over HTTP/Websocket\nhttps://github.com/bingotang1981/stcp2ws")
 		fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
 		fmt.Println("Make ssl cert:\nopenssl genrsa -out server.key 2048\nopenssl ecparam -genkey -name secp384r1 -out server.key\nopenssl req -new -x509 -sha256 -key server.key -out server.crt -days 36500")
 		os.Exit(0)
@@ -697,7 +701,7 @@ func main() {
 	if stype == "server" {
 		isServer = true
 		if arg_num < 4 {
-			fmt.Println("TCP over WebSocket (tcp2ws) with UDP support 11.1\nhttps://github.com/zanjie1999/tcp-over-websocket")
+			fmt.Println("TCP/UDP Over HTTP/Websocket\nhttps://github.com/bingotang1981/stcp2ws")
 			fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
 			fmt.Println("Make ssl cert:\nopenssl genrsa -out server.key 2048\nopenssl ecparam -genkey -name secp384r1 -out server.key\nopenssl req -new -x509 -sha256 -key server.key -out server.crt -days 36500")
 			os.Exit(0)
@@ -705,13 +709,13 @@ func main() {
 	} else if stype == "client" {
 		isServer = false
 		if arg_num < 6 {
-			fmt.Println("TCP over WebSocket (tcp2ws) with UDP support 11.1\nhttps://github.com/zanjie1999/tcp-over-websocket")
+			fmt.Println("TCP/UDP Over HTTP/Websocket\nhttps://github.com/bingotang1981/stcp2ws")
 			fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
 			fmt.Println("Make ssl cert:\nopenssl genrsa -out server.key 2048\nopenssl ecparam -genkey -name secp384r1 -out server.key\nopenssl req -new -x509 -sha256 -key server.key -out server.crt -days 36500")
 			os.Exit(0)
 		}
 	} else {
-		fmt.Println("TCP over WebSocket (tcp2ws) with UDP support 11.1\nhttps://github.com/zanjie1999/tcp-over-websocket")
+		fmt.Println("TCP/UDP Over HTTP/Websocket\nhttps://github.com/bingotang1981/stcp2ws")
 		fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
 		fmt.Println("Make ssl cert:\nopenssl genrsa -out server.key 2048\nopenssl ecparam -genkey -name secp384r1 -out server.key\nopenssl req -new -x509 -sha256 -key server.key -out server.crt -days 36500")
 		os.Exit(0)
@@ -827,12 +831,12 @@ func main() {
 	}
 	for {
 		if isServer {
-			// 心跳间隔2分钟
-			time.Sleep(2 * 60 * time.Second)
-			nowTimeCut := time.Now().Unix() - 2*60
+			//heartbeat interval is 90 seconds as 100 seconds is the default timeout in cloudflare cdn
+			time.Sleep(HEART_BEAT_INTERVAL * time.Second)
+			nowTimeCut := time.Now().Unix() - HEART_BEAT_INTERVAL
 			// check ws
 			for k, i := range connMap {
-				// 如果超过2分钟没有收到消息，才发心跳，避免读写冲突
+				// 如果超时没有收到消息，才发心跳，避免读写冲突
 				if i.t < nowTimeCut {
 					if i.isUdp {
 						// udp不需要心跳 超时就关闭
