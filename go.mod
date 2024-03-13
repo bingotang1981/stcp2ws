@@ -1,4 +1,4 @@
-module cupinkie.com/stcp2ws
+module github.com/bingotang1981/stcp2ws
 
 go 1.15
 
