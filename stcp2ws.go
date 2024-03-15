@@ -1,33 +1,25 @@
-// Tcp over WebSocket (tcp2ws)
+// Tcp over HTTP/WebSocket (stcp2ws)
 // 基于ws的内网穿透工具
 // Sparkle 20210430
-// 11.1
+// 0.2
 
 package main
 
 import (
 	"crypto/tls"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/miekg/dns"
-)
-
-const (
-	HEART_BEAT_INTERVAL = 90
 )
 
 type tcp2wsSparkle struct {
@@ -42,15 +34,19 @@ type tcp2wsSparkle struct {
 	t       int64
 }
 
+const (
+	HEART_BEAT_INTERVAL = 90
+)
+
 var (
-	tcpAddr    string
-	wsAddr     string
-	wsAddrIp   string
-	myToken    string
-	wsAddrPort     = ""
-	msgType    int = websocket.BinaryMessage
-	isServer   bool
-	connMap    map[string]*tcp2wsSparkle = make(map[string]*tcp2wsSparkle)
+	// tcpAddr    string
+	// wsAddr string
+	// wsAddrIp   string
+	serverToken string
+	// wsAddrPort     = ""
+	msgType  int = websocket.BinaryMessage
+	isServer bool
+	connMap  map[string]*tcp2wsSparkle = make(map[string]*tcp2wsSparkle)
 	// go的map不是线程安全的 读写冲突就会直接exit
 	connMapLock *sync.RWMutex = new(sync.RWMutex)
 )
@@ -94,14 +90,14 @@ func deleteConn(uuid string) {
 	}
 }
 
-func dialNewWs(uuid string) bool {
+func dialNewWs(uuid string, wsAddr string, token string) bool {
 	log.Print("dial ", uuid)
 	// call ws
 	dialer := websocket.Dialer{TLSClientConfig: &tls.Config{RootCAs: nil, InsecureSkipVerify: true}, Proxy: http.ProxyFromEnvironment, NetDial: meDial}
 
 	// Define custom headers for the connection
 	headers := http.Header{
-		"Authorization": []string{("Bearer " + myToken)},
+		"Authorization": []string{("Bearer " + token)},
 	}
 
 	wsConn, _, err := dialer.Dial(wsAddr, headers)
@@ -127,8 +123,12 @@ func dialNewWs(uuid string) bool {
 	return true
 }
 
+func readTcp2WsOnServer(uuid string) {
+	readTcp2Ws(uuid, "", "")
+}
+
 // 将tcp或udp的数据转发到ws
-func readTcp2Ws(uuid string) bool {
+func readTcp2Ws(uuid string, wsAddr string, token string) bool {
 	defer func() {
 		err := recover()
 		if err != nil {
@@ -156,12 +156,12 @@ func readTcp2Ws(uuid string) bool {
 			// 客户端udp先收到内容再创建ws连接 服务端不可能进入这里
 			if !isServer && conn.wsConn == nil {
 				log.Print("try reconnect to ws ", uuid)
-				if !dialNewWs(uuid) {
+				if !dialNewWs(uuid, wsAddr, token) {
 					// udp ws连接失败 存起来 下次重试
 					saveErrorBuf(conn, buf, length)
 					continue
 				}
-				go readWs2TcpClient(uuid, true)
+				go readWs2TcpClient(uuid, wsAddr, token, true)
 			}
 		} else {
 			length, err = tcpConn.Read(buf)
@@ -199,7 +199,7 @@ func readTcp2Ws(uuid string) bool {
 				// 客户端 tcp上次重连没有成功 保存并重连 服务端不会设置成nil不会进这里
 				saveErrorBuf(conn, buf, length)
 				log.Print("try reconnect to ws ", uuid)
-				go runClient(nil, uuid)
+				go runClient(nil, uuid, wsAddr, token)
 				continue
 			}
 			if err = wsConn.WriteMessage(msgType, buf[:length]); err != nil {
@@ -299,7 +299,7 @@ func readWs2Tcp(uuid string) bool {
 }
 
 // 多了一个被动断开后自动重连的功能
-func readWs2TcpClient(uuid string, isUdp bool) {
+func readWs2TcpClient(uuid string, wsAddr string, token string, isUdp bool) {
 	if readWs2Tcp(uuid) {
 		log.Print(uuid, " ws Boom!")
 		// error return  re call ws
@@ -309,7 +309,7 @@ func readWs2TcpClient(uuid string, isUdp bool) {
 			conn.wsConn = nil
 			if !isUdp {
 				// udp的话下次收到数据时会重新建立ws连接 tcp现在重连
-				runClient(nil, uuid)
+				runClient(nil, uuid, wsAddr, token)
 			}
 		}
 	}
@@ -338,10 +338,8 @@ func saveErrorBuf(conn *tcp2wsSparkle, buf []byte, length int) {
 	}
 }
 
-// 自定义的Dial连接器，自定义域名解析
 func meDial(network, address string) (net.Conn, error) {
-	// return net.DialTimeout(network, address, 5 * time.Second)
-	return net.DialTimeout(network, wsAddrIp+wsAddrPort, 5*time.Second)
+	return net.DialTimeout(network, address, 5*time.Second)
 }
 
 // 服务端 是tcp还是udp连接是客户端发过来的
@@ -410,7 +408,7 @@ func runServer(wsConn *websocket.Conn) {
 		// save
 		setConn(uuid, &tcp2wsSparkle{true, udpConn, nil, nil, wsConn, uuid, false, nil, time.Now().Unix()})
 
-		go readTcp2Ws(uuid)
+		go readTcp2WsOnServer(uuid)
 	} else if !isUdp && tcpConn == nil {
 		// call new tcp
 		log.Print("new tcp for ", uuid)
@@ -435,7 +433,7 @@ func runServer(wsConn *websocket.Conn) {
 		// save
 		setConn(uuid, &tcp2wsSparkle{false, nil, nil, tcpConn, wsConn, uuid, false, nil, time.Now().Unix()})
 
-		go readTcp2Ws(uuid)
+		go readTcp2WsOnServer(uuid)
 	} else {
 		log.Print("uuid finded ", uuid)
 	}
@@ -444,7 +442,7 @@ func runServer(wsConn *websocket.Conn) {
 }
 
 // tcp客户端
-func runClient(tcpConn net.Conn, uuid string) {
+func runClient(tcpConn net.Conn, uuid string, wsAddr string, token string) {
 	defer func() {
 		err := recover()
 		if err != nil {
@@ -466,12 +464,12 @@ func runClient(tcpConn net.Conn, uuid string) {
 		// save conn
 		setConn(uuid, &tcp2wsSparkle{false, nil, nil, tcpConn, nil, uuid, false, nil, time.Now().Unix()})
 	}
-	if dialNewWs(uuid) {
+	if dialNewWs(uuid, wsAddr, token) {
 		// connect ok
-		go readWs2TcpClient(uuid, false)
+		go readWs2TcpClient(uuid, wsAddr, token, false)
 		if tcpConn != nil {
 			// 不是重连
-			go readTcp2Ws(uuid)
+			go readTcp2Ws(uuid, wsAddr, token)
 		}
 	} else {
 		log.Print("reconnect to ws fail")
@@ -479,7 +477,7 @@ func runClient(tcpConn net.Conn, uuid string) {
 }
 
 // udp客户端
-func runClientUdp(listenHostPort string) {
+func runClientUdp(listenHostPort string, wsAddr string, token string, tcpAddr string) {
 	defer func() {
 		err := recover()
 		if err != nil {
@@ -506,7 +504,7 @@ func runClientUdp(listenHostPort string) {
 		setConn(uuid, &tcp2wsSparkle{true, udpConn, nil, nil, nil, uuid, false, nil, time.Now().Unix()})
 
 		// 收到内容后会开ws连接并拿到UDPAddr 阻塞
-		readTcp2Ws(uuid)
+		readTcp2Ws(uuid, wsAddr, token)
 	}
 
 }
@@ -526,7 +524,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, "index.html")
 		}
 		return
-	} else if r.Header.Get("Authorization") != ("Bearer " + myToken) {
+	} else if r.Header.Get("Authorization") != ("Bearer " + serverToken) {
 		log.Print("Invalid Authorization: ", r.Header.Get("Authorization"))
 		_, err := os.Stat("index.html")
 		if err == nil {
@@ -553,7 +551,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // 响应tcp
-func tcpHandler(listener net.Listener) {
+func tcpHandler(listener net.Listener, wsAddr string, token string, tcpAddr string) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -561,11 +559,11 @@ func tcpHandler(listener net.Listener) {
 			return
 		}
 
-		log.Print("new tcp conn: ")
+		// log.Print("new tcp conn: ")
 
 		// 新线程hold住这条连接
 		myuuid := uuid.New().String()[31:] + " " + tcpAddr
-		go runClient(conn, myuuid)
+		go runClient(conn, myuuid, wsAddr, token)
 	}
 }
 
@@ -583,106 +581,69 @@ func startWsServer(listenPort string, isSsl bool, sslCrt string, sslKey string) 
 	}
 }
 
-// 又造轮子了 发现给v4的ip加个框也能连诶
-func tcping(hostname, port string) int64 {
-	st := time.Now().UnixNano()
-	c, err := net.DialTimeout("tcp", "["+hostname+"]"+port, 5*time.Second)
-	if err != nil {
-		return -1
-	}
-	c.Close()
-	return (time.Now().UnixNano() - st) / 1e6
-}
-
-// 优选ip
-func dnsPreferIp(hostname string) (string, uint32) {
-	// 由正则驱动的hosts解析器 此解析器拥有超咩力
-	hostsFile := "/etc/hosts"
-	if runtime.GOOS == "windows" {
-		hostsFile = os.Getenv("SystemRoot") + `\System32\drivers\etc\hosts`
-	}
-	hosts, err := ioutil.ReadFile(hostsFile)
-	if err == nil {
-		re := regexp.MustCompile(`(?m)^([0-9.]+).*[ \t](` + hostname + `$|` + hostname + ` .*)`)
-		matches := re.FindAllStringSubmatch(string(hosts), -1)
-		if len(matches) > 0 {
-			log.Print("Use System hosts: ", matches[0][1], " ", hostname)
-			return matches[0][1], 0
-		}
+func startServerThread(listenHostPort string, token string, isSsl bool, sslCrt string, sslKey string) {
+	isServer = true
+	serverToken = token
+	// ws server
+	http.HandleFunc("/", wsHandler)
+	go startWsServer(listenHostPort, isSsl, sslCrt, sslKey)
+	if isSsl {
+		log.Print("Server Started wss://" + listenHostPort)
 	} else {
-		log.Print(`Read System hosts "`, hostsFile, `" error: `, err)
+		log.Print("Server Started ws://" + listenHostPort)
 	}
+	fmt.Println("{\nproxy_read_timeout 3600;\nproxy_http_version 1.1;\nproxy_set_header Upgrade $http_upgrade;\nproxy_set_header Connection \"Upgrade\";\nproxy_set_header X-Forwarded-For $remote_addr;\naccess_log off;\n}")
 
-	// 从dns获取
-	log.Print("nslookup " + hostname)
-
-	tc := dns.Client{Net: "tcp", Timeout: 10 * time.Second}
-	uc := dns.Client{Net: "udp", Timeout: 10 * time.Second}
-	m := dns.Msg{}
-	m.SetQuestion(hostname+".", dns.TypeA)
-
-	// 获取系统配置的dns 如果有就用它解析域名 windows咩咩不用不知道怎么写所以不支持
-	// 由正则驱动的resolv.conf解析器 此解析器拥有超咩力
-	systemDns := "127.0.0.1"
-	if runtime.GOOS != "windows" {
-		resolv, err := ioutil.ReadFile("/etc/resolv.conf")
-		if err == nil {
-			re := regexp.MustCompile(`(?m)^nameserver[ \t]+([0-9.]+).*`)
-			matches := re.FindAllStringSubmatch(string(resolv), -1)
-			if len(matches) > 0 {
-				systemDns = matches[0][1]
-			}
-		} else {
-			log.Print(`Read System resolv.conf "/etc/resolv.conf" error: `, err)
-		}
-	}
-	r, _, err := uc.Exchange(&m, systemDns+":53")
-	if err != nil {
-		// log.Print("Local DNS Fail: ", err)
-		r, _, err = tc.Exchange(&m, "208.67.222.222:5353")
-		if err != nil {
-			log.Print("OpenDNS Fail: ", err)
-			return "", 0
-		}
-	} else {
-		log.Print("Use System DNS ", systemDns)
-	}
-	if len(r.Answer) == 0 {
-		log.Print("Could not found NS records")
-		return "", 0
-	}
-
-	ip := ""
-	var ttl uint32 = 60
-	var lastPing int64 = 5000
-	for _, ans := range r.Answer {
-		if a, ok := ans.(*dns.A); ok {
-			nowPing := tcping(a.A.String(), wsAddrPort)
-			log.Print("tcping "+a.A.String()+" ", nowPing, "ms")
-			if nowPing != -1 && nowPing < lastPing {
-				ip = a.A.String()
-				ttl = ans.Header().Ttl
-				lastPing = nowPing
-			}
-		}
-	}
-	log.Print("Prefer IP " + ip + " for " + hostname)
-	return ip, ttl
-}
-
-// 根据dns ttl自动更新ip
-func dnsPreferIpWithTtl(hostname string, ttl uint32) {
 	for {
-		log.Println("DNS TTL: ", ttl, "s")
-		time.Sleep(time.Duration(ttl) * time.Second)
-		log.Println("Update IP for " + hostname)
-		ip, ttlNow := dnsPreferIp(hostname)
-		if ip != "" {
-			wsAddrIp = ip
-			ttl = ttlNow
-		} else {
-			log.Println("DNS Fail, Use Last IP: " + wsAddrIp)
+		//heartbeat interval is 90 seconds as 100 seconds is the default timeout in cloudflare cdn
+		time.Sleep(HEART_BEAT_INTERVAL * time.Second)
+		nowTimeCut := time.Now().Unix() - HEART_BEAT_INTERVAL
+		// check ws
+		for k, i := range connMap {
+			// 如果超时没有收到消息，才发心跳，避免读写冲突
+			if i.t < nowTimeCut {
+				if i.isUdp {
+					// udp不需要心跳 超时就关闭
+					log.Print(i.uuid, " udp timeout close")
+					deleteConn(k)
+				} else if err := i.wsConn.WriteMessage(websocket.TextMessage, []byte("tcp2wsSparkle")); err != nil {
+					log.Print(i.uuid, " tcp timeout close")
+					i.wsConn.Close()
+					deleteConn(k)
+				}
+			}
 		}
+		log.Print("Active cons: ", len(connMap))
+	}
+}
+
+func startClientThread(listenHostPort string, mywsAddr string, token string, tcpAddr string) {
+	isServer = false
+
+	l, err := net.Listen("tcp", listenHostPort)
+	if err != nil {
+		log.Fatal("tcp2ws Client Start Error: ", err)
+	}
+
+	go tcpHandler(l, mywsAddr, token, tcpAddr)
+	log.Print("Client Started " + listenHostPort + " -> " + mywsAddr + " (" + tcpAddr + ")")
+
+	// 启动一个udp监听用于udp转发
+	go runClientUdp(listenHostPort, mywsAddr, token, tcpAddr)
+}
+
+func startClientMonitorThread(){
+	for {
+		// 按 ctrl + c 退出，会阻塞
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, os.Kill)
+		<-c
+		fmt.Println()
+		log.Print("quit...")
+		for k, _ := range connMap {
+			deleteConn(k)
+		}
+		os.Exit(0)
 	}
 }
 
@@ -696,10 +657,12 @@ func main() {
 		os.Exit(0)
 	}
 
+	isserv := true
+
 	//第一个参数是服务类型：client/server
 	stype := os.Args[1]
 	if stype == "server" {
-		isServer = true
+		isserv = true
 		if arg_num < 4 {
 			fmt.Println("TCP/UDP Over HTTP/Websocket\nhttps://github.com/bingotang1981/stcp2ws")
 			fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
@@ -707,7 +670,7 @@ func main() {
 			os.Exit(0)
 		}
 	} else if stype == "client" {
-		isServer = false
+		isserv = false
 		if arg_num < 6 {
 			fmt.Println("TCP/UDP Over HTTP/Websocket\nhttps://github.com/bingotang1981/stcp2ws")
 			fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
@@ -723,11 +686,10 @@ func main() {
 
 	match := false
 
-	if isServer {
+	if isserv {
 		// 服务端
 		listenPort := os.Args[2]
-
-		myToken = os.Args[3]
+		token := os.Args[3]
 		isSsl := false
 		if arg_num == 5 {
 			isSsl = os.Args[4] == "wss" || os.Args[4] == "https" || os.Args[4] == "ssl"
@@ -740,126 +702,34 @@ func main() {
 			sslKey = os.Args[5]
 		}
 
-		// ws server
-		http.HandleFunc("/", wsHandler)
+		startServerThread(listenPort, token, isSsl, sslCrt, sslKey)
 
-		match, _ = regexp.MatchString(`^\d+$`, listenPort)
-		listenHostPort := listenPort
-		if match {
-			// 如果没指定监听ip那就全部监听 省掉不必要的防火墙
-			listenHostPort = "0.0.0.0:" + listenPort
-		}
-		go startWsServer(listenHostPort, isSsl, sslCrt, sslKey)
-		if isSsl {
-			log.Print("Server Started wss://" + listenHostPort)
-			fmt.Print("Proxy with Nginx:\nlocation /" + uuid.New().String()[24:] + "/ {\nproxy_pass https://")
-		} else {
-			log.Print("Server Started ws://" + listenHostPort)
-			fmt.Print("Proxy with Nginx:\nlocation /" + uuid.New().String()[24:] + "/ {\nproxy_pass http://")
-		}
-		if match {
-			fmt.Print("127.0.0.1:" + listenPort)
-		} else {
-			fmt.Print(listenPort)
-		}
-		fmt.Println("/;\nproxy_read_timeout 3600;\nproxy_http_version 1.1;\nproxy_set_header Upgrade $http_upgrade;\nproxy_set_header Connection \"Upgrade\";\nproxy_set_header X-Forwarded-For $remote_addr;\naccess_log off;\n}")
 	} else {
-		serverUrl := os.Args[2]
-		listenPort := os.Args[3]
-		myToken = os.Args[4]
-		tcpAddr = os.Args[5]
-		// 客户端
-		if serverUrl[:5] == "https" {
-			wsAddr = "wss" + serverUrl[5:]
-		} else if serverUrl[:4] == "http" {
-			wsAddr = "ws" + serverUrl[4:]
-		} else {
-			wsAddr = serverUrl
-		}
-		match, _ = regexp.MatchString(`^\d+$`, listenPort)
-		listenHostPort := listenPort
-		if match {
-			// 如果没指定监听ip那就全部监听 省掉不必要的防火墙
-			listenHostPort = "0.0.0.0:" + listenPort
-		}
-		l, err := net.Listen("tcp", listenHostPort)
-		if err != nil {
-			log.Fatal("tcp2ws Client Start Error: ", err)
-		}
-		// 将ws服务端域名对应的ip缓存起来，避免多次请求dns或dns爆炸导致无法连接
-		u, err := url.Parse(wsAddr)
-		if err != nil {
-			log.Fatal("tcp2ws Client Start Error: ", err)
-		}
-		// 确定端口号，下面域名tcping要用
-		if u.Port() != "" {
-			wsAddrPort = ":" + u.Port()
-		} else if wsAddr[:3] == "wss" {
-			wsAddrPort = ":443"
-		} else {
-			wsAddrPort = ":80"
-		}
-		if u.Host[0] == '[' {
-			// ipv6
-			wsAddrIp = "[" + u.Hostname() + "]"
-			log.Print("tcping "+u.Hostname()+" ", tcping(u.Hostname(), wsAddrPort), "ms")
-		} else if match, _ = regexp.MatchString(`^\d+.\d+.\d+.\d+$`, u.Hostname()); match {
-			// ipv4
-			wsAddrIp = u.Hostname()
-			log.Print("tcping "+wsAddrIp+" ", tcping(wsAddrIp, wsAddrPort), "ms")
-		} else {
-			// 域名，需要解析，ip优选
-			// var ttl uint32
-			// wsAddrIp, ttl = dnsPreferIp(u.Hostname())
-			// if wsAddrIp == "" {
-			// 	log.Fatal("tcp2ws Client Start Error: dns resolve error")
-			// } else if ttl > 0 {
-			// 	// 根据dns ttl自动更新ip
-			// 	go dnsPreferIpWithTtl(u.Hostname(), ttl)
-			// }
-			//取消ip优选
-			wsAddrIp = u.Hostname()
-			log.Print("tcping "+wsAddrIp+" ", tcping(wsAddrIp, wsAddrPort), "ms")
-		}
 
-		go tcpHandler(l)
+		count := arg_num - 2
 
-		// 启动一个udp监听用于udp转发
-		go runClientUdp(listenHostPort)
-
-		log.Print("Client Started " + listenHostPort + " -> " + wsAddr)
-	}
-	for {
-		if isServer {
-			//heartbeat interval is 90 seconds as 100 seconds is the default timeout in cloudflare cdn
-			time.Sleep(HEART_BEAT_INTERVAL * time.Second)
-			nowTimeCut := time.Now().Unix() - HEART_BEAT_INTERVAL
-			// check ws
-			for k, i := range connMap {
-				// 如果超时没有收到消息，才发心跳，避免读写冲突
-				if i.t < nowTimeCut {
-					if i.isUdp {
-						// udp不需要心跳 超时就关闭
-						log.Print(i.uuid, " udp timeout close")
-						deleteConn(k)
-					} else if err := i.wsConn.WriteMessage(websocket.TextMessage, []byte("tcp2wsSparkle")); err != nil {
-						log.Print(i.uuid, " tcp timeout close")
-						i.wsConn.Close()
-						deleteConn(k)
-					}
-				}
+		for i := 0; i < count / 4; i++ {
+			// 客户端
+			serverUrl := os.Args[2+i*4]
+			listenPort := os.Args[3+i*4]
+			token := os.Args[4+i*4]
+			tcpAddr := os.Args[5+i*4]
+			wsAddr := serverUrl
+			if serverUrl[:5] == "https" {
+				wsAddr = "wss" + serverUrl[5:]
+			} else if serverUrl[:4] == "http" {
+				wsAddr = "ws" + serverUrl[4:]
 			}
-		} else {
-			// 按 ctrl + c 退出，会阻塞
-			c := make(chan os.Signal, 1)
-			signal.Notify(c, os.Interrupt, os.Kill)
-			<-c
-			fmt.Println()
-			log.Print("quit...")
-			for k, _ := range connMap {
-				deleteConn(k)
+
+			match, _ = regexp.MatchString(`^\d+$`, listenPort)
+			listenHostPort := listenPort
+			if match {
+				// 如果没指定监听ip那就全部监听 省掉不必要的防火墙
+				listenHostPort = "0.0.0.0:" + listenPort
 			}
-			os.Exit(0)
+			startClientThread(listenHostPort, wsAddr, token, tcpAddr)
 		}
+
+		startClientMonitorThread()
 	}
 }
