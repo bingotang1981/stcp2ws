@@ -39,14 +39,12 @@ const (
 )
 
 var (
-	// tcpAddr    string
-	// wsAddr string
-	// wsAddrIp   string
-	serverToken string
-	// wsAddrPort     = ""
-	msgType  int = websocket.BinaryMessage
+	//Whether in server/client mode
 	isServer bool
-	connMap  map[string]*tcp2wsSparkle = make(map[string]*tcp2wsSparkle)
+	//Only used when in server mode
+	serverToken string
+
+	connMap map[string]*tcp2wsSparkle = make(map[string]*tcp2wsSparkle)
 	// go的map不是线程安全的 读写冲突就会直接exit
 	connMapLock *sync.RWMutex = new(sync.RWMutex)
 )
@@ -202,7 +200,7 @@ func readTcp2Ws(uuid string, wsAddr string, token string) bool {
 				go runClient(nil, uuid, wsAddr, token)
 				continue
 			}
-			if err = wsConn.WriteMessage(msgType, buf[:length]); err != nil {
+			if err = wsConn.WriteMessage(websocket.BinaryMessage, buf[:length]); err != nil {
 				log.Print(uuid, " ws write err: ", err)
 				// tcpConn.Close()
 				wsConn.Close()
@@ -268,10 +266,13 @@ func readWs2Tcp(uuid string) bool {
 					}
 					delete(connMap, uuid)
 					return false
+				} else {
+					log.Print(uuid, " unknown text message: "+msg)
+					continue
 				}
 			}
 
-			msgType = t
+			// msgType = t
 			if isUdp {
 				if isServer {
 					if _, err = udpConn.Write(buf); err != nil {
@@ -632,7 +633,7 @@ func startClientThread(listenHostPort string, mywsAddr string, token string, tcp
 	go runClientUdp(listenHostPort, mywsAddr, token, tcpAddr)
 }
 
-func startClientMonitorThread(){
+func startClientMonitorThread() {
 	for {
 		// 按 ctrl + c 退出，会阻塞
 		c := make(chan os.Signal, 1)
@@ -708,7 +709,7 @@ func main() {
 
 		count := arg_num - 2
 
-		for i := 0; i < count / 4; i++ {
+		for i := 0; i < count/4; i++ {
 			// 客户端
 			serverUrl := os.Args[2+i*4]
 			listenPort := os.Args[3+i*4]
