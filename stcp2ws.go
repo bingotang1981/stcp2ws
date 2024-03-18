@@ -75,14 +75,17 @@ func deleteConn(uuid string) {
 		conn.del = true
 		if conn.udpConn != nil {
 			conn.udpConn.Close()
+			conn.udpConn = nil
 		}
 		if conn.tcpConn != nil {
 			conn.tcpConn.Close()
+			conn.tcpConn = nil
 		}
 		if conn.wsConn != nil {
 			log.Print(uuid, " bye")
 			conn.wsConn.WriteMessage(websocket.TextMessage, []byte("tcp2wsSparkleClose"))
 			conn.wsConn.Close()
+			conn.wsConn = nil
 		}
 		delete(connMap, uuid)
 	}
@@ -205,11 +208,10 @@ func readTcp2Ws(uuid string, wsAddr string, token string) bool {
 				// tcpConn.Close()
 				wsConn.Close()
 				saveErrorBuf(conn, buf, length)
-				// 此处无需中断 等着新的wsConn 或是被 断开连接 / 回收 即可
+
+				//Set wsConn to nil to avoid endless loop under extreme conditions
+				conn.wsConn = nil
 			}
-			// if !isServer {
-			// 	log.Print(uuid, " send: ", length)
-			// }
 		}
 	}
 }
@@ -220,7 +222,6 @@ func readWs2Tcp(uuid string) bool {
 		err := recover()
 		if err != nil {
 			log.Print(uuid, " ws -> tcp Boom!\n", err)
-			// readWs2Tcp(uuid)
 		}
 	}()
 
@@ -272,7 +273,6 @@ func readWs2Tcp(uuid string) bool {
 				}
 			}
 
-			// msgType = t
 			if isUdp {
 				if isServer {
 					if _, err = udpConn.Write(buf); err != nil {
@@ -703,7 +703,14 @@ func main() {
 			sslKey = os.Args[5]
 		}
 
-		startServerThread(listenPort, token, isSsl, sslCrt, sslKey)
+		match, _ = regexp.MatchString(`^\d+$`, listenPort)
+		listenHostPort := listenPort
+		if match {
+			// 如果没指定监听ip那就全部监听 省掉不必要的防火墙
+			listenHostPort = "0.0.0.0:" + listenPort
+		}
+
+		startServerThread(listenHostPort, token, isSsl, sslCrt, sslKey)
 
 	} else {
 
@@ -731,6 +738,7 @@ func main() {
 			startClientThread(listenHostPort, wsAddr, token, tcpAddr)
 		}
 
+		//Listen to Ctrl+C event
 		startClientMonitorThread()
 	}
 }
