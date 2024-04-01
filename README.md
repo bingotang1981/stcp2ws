@@ -1,4 +1,4 @@
-# stcp2ws
+# stcp2ws (TCP Over HTTP/WebSocket)
 
 ## Introduction
 
@@ -6,7 +6,7 @@ This is a modification based on the good work which is at https://github.com/zan
 
 We have made the following changes:
 
-1. Comment out the regular check on the server ip by using the TCPPing feature.
+1. Make the original solution more stable, e.g. modify the reconnection mechanism, handle the concurrent access to the map, remove the TCPPing feature, etc.
 2. Add an authorization (bearertoken like) parameter to enhance the security.
 3. Provide the target ip:port on the server so that we can easily navigate the services.
 4. Listen at multpile ports on the client side so that it can connect to multiple servers.
@@ -67,5 +67,3 @@ On Client side:
 `./stcp2ws client https://aa.yourdomain.com 8088 yourCustomizedBearerToken 127.0.0.1:8080`
 
 Then you can access the website which is at http://127.0.0.1:8088 by using a browswer.
-
-
