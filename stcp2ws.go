@@ -36,7 +36,7 @@ type tcp2wsSparkle struct {
 
 const (
 	HEART_BEAT_INTERVAL = 90
-	VERSION             = "0.3.0"
+	VERSION             = "0.3.1"
 )
 
 var (
@@ -232,7 +232,7 @@ func readTcp2WsOnServer(uuid string) {
 	buf := make([]byte, 32768)
 
 	for {
-		
+
 		conn, haskey := getConn(uuid)
 		if !haskey {
 			return
@@ -502,6 +502,7 @@ func readUdp2WsOnClient(uuid string, wsAddr string, token string) {
 				deleteConn(uuid)
 			}
 
+			//if udp error, return
 			return
 		}
 		// log.Print(uuid, " ws send: ", length)
@@ -509,7 +510,8 @@ func readUdp2WsOnClient(uuid string, wsAddr string, token string) {
 			// 因为tcpConn.Read会阻塞 所以要从connMap中获取最新的wsConn
 			conn, haskey := getConn(uuid)
 			if !haskey || conn.del {
-				return
+				//drop this message, continue
+				continue
 			}
 			wsConn := conn.wsConn
 			conn.t = time.Now().Unix()
@@ -519,12 +521,14 @@ func readUdp2WsOnClient(uuid string, wsAddr string, token string) {
 					go readWs2TcpOnClient(uuid, wsAddr, token)
 					conn2, haskey2 := getConn(uuid)
 					if !haskey2 || conn2.del {
-						return
+						//drop this message, continue
+						continue
 					} else {
 						wsConn = conn2.wsConn
 					}
 				} else {
-					return
+					//drop this message, continue
+					continue
 				}
 			}
 
@@ -946,7 +950,7 @@ func startServerThread(listenHostPort string, token string, isSsl bool, sslCrt s
 	}
 }
 
-func startClientThread(listenHostPort string, mywsAddr string, token string, tcpAddr string) {
+func startTcpClientThread(listenHostPort string, mywsAddr string, token string, tcpAddr string) {
 
 	l, err := net.Listen("tcp", listenHostPort)
 	if err != nil {
@@ -955,8 +959,10 @@ func startClientThread(listenHostPort string, mywsAddr string, token string, tcp
 
 	go tcpHandler(l, mywsAddr, token, tcpAddr)
 	log.Print("Client Started " + listenHostPort + " -> " + mywsAddr + " (" + tcpAddr + ")")
+}
 
-	// // 启动一个udp监听用于udp转发
+func startUdpClientThread(listenHostPort string, mywsAddr string, token string, tcpAddr string) {
+	// 启动一个udp监听用于udp转发
 	go runClientUdp(listenHostPort, mywsAddr, token, tcpAddr)
 }
 
@@ -981,41 +987,49 @@ func main() {
 	arg_num := len(os.Args)
 	if arg_num < 2 {
 		fmt.Println("TCP/UDP Over HTTP/Websocket\nhttps://github.com/bingotang1981/stcp2ws")
-		fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
+		fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nUdpClient: udpclient ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
 		fmt.Println("Make ssl cert:\nopenssl genrsa -out server.key 2048\nopenssl ecparam -genkey -name secp384r1 -out server.key\nopenssl req -new -x509 -sha256 -key server.key -out server.crt -days 36500")
 		os.Exit(0)
 	}
 
-	isserv := true
+	mode := 1
 
-	//第一个参数是服务类型：client/server
+	//第一个参数是服务类型：server/client/udpclient
 	stype := os.Args[1]
 	if stype == "server" {
-		isserv = true
+		mode = 1
 		if arg_num < 4 {
 			fmt.Println("TCP/UDP Over HTTP/Websocket\nhttps://github.com/bingotang1981/stcp2ws")
-			fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
+			fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nUdpClient: udpclient ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
 			fmt.Println("Make ssl cert:\nopenssl genrsa -out server.key 2048\nopenssl ecparam -genkey -name secp384r1 -out server.key\nopenssl req -new -x509 -sha256 -key server.key -out server.crt -days 36500")
 			os.Exit(0)
 		}
 	} else if stype == "client" {
-		isserv = false
+		mode = 2
 		if arg_num < 6 {
 			fmt.Println("TCP/UDP Over HTTP/Websocket\nhttps://github.com/bingotang1981/stcp2ws")
-			fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
+			fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nUdpClient: udpclient ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
+			fmt.Println("Make ssl cert:\nopenssl genrsa -out server.key 2048\nopenssl ecparam -genkey -name secp384r1 -out server.key\nopenssl req -new -x509 -sha256 -key server.key -out server.crt -days 36500")
+			os.Exit(0)
+		}
+	} else if stype == "udpclient" {
+		mode = 3
+		if arg_num < 6 {
+			fmt.Println("TCP/UDP Over HTTP/Websocket\nhttps://github.com/bingotang1981/stcp2ws")
+			fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nUdpClient: udpclient ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
 			fmt.Println("Make ssl cert:\nopenssl genrsa -out server.key 2048\nopenssl ecparam -genkey -name secp384r1 -out server.key\nopenssl req -new -x509 -sha256 -key server.key -out server.crt -days 36500")
 			os.Exit(0)
 		}
 	} else {
 		fmt.Println("TCP/UDP Over HTTP/Websocket\nhttps://github.com/bingotang1981/stcp2ws")
-		fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
+		fmt.Println("Client: client ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nUdpClient: udpclient ws://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer\nServer: server tcp2wsPort yourCustomizedBearerToken\nUse wss: ip:port tcp2wsPort server.crt server.key")
 		fmt.Println("Make ssl cert:\nopenssl genrsa -out server.key 2048\nopenssl ecparam -genkey -name secp384r1 -out server.key\nopenssl req -new -x509 -sha256 -key server.key -out server.crt -days 36500")
 		os.Exit(0)
 	}
 
 	match := false
 
-	if isserv {
+	if mode == 1 {
 		// 服务端
 		listenPort := os.Args[2]
 		token := os.Args[3]
@@ -1040,6 +1054,34 @@ func main() {
 
 		startServerThread(listenHostPort, token, isSsl, sslCrt, sslKey)
 
+	} else if mode == 2 {
+
+		count := arg_num - 2
+
+		for i := 0; i < count/4; i++ {
+			// 客户端
+			serverUrl := os.Args[2+i*4]
+			listenPort := os.Args[3+i*4]
+			token := os.Args[4+i*4]
+			tcpAddr := os.Args[5+i*4]
+			wsAddr := serverUrl
+			if serverUrl[:5] == "https" {
+				wsAddr = "wss" + serverUrl[5:]
+			} else if serverUrl[:4] == "http" {
+				wsAddr = "ws" + serverUrl[4:]
+			}
+
+			match, _ = regexp.MatchString(`^\d+$`, listenPort)
+			listenHostPort := listenPort
+			if match {
+				// 如果没指定监听ip那就全部监听 省掉不必要的防火墙
+				listenHostPort = "0.0.0.0:" + listenPort
+			}
+			startTcpClientThread(listenHostPort, wsAddr, token, tcpAddr)
+		}
+
+		//Listen to Ctrl+C event
+		startClientMonitorThread()
 	} else {
 
 		count := arg_num - 2
@@ -1063,7 +1105,7 @@ func main() {
 				// 如果没指定监听ip那就全部监听 省掉不必要的防火墙
 				listenHostPort = "0.0.0.0:" + listenPort
 			}
-			startClientThread(listenHostPort, wsAddr, token, tcpAddr)
+			startUdpClientThread(listenHostPort, wsAddr, token, tcpAddr)
 		}
 
 		//Listen to Ctrl+C event
