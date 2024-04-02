@@ -21,6 +21,9 @@ For server side:
 For client side:
 `./stcp2ws client http://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer`
 
+For udpclient side:
+`./stcp2ws udpclient http://tcp2wsUrl localPort yourCustomizedBearerToken yourTargetip:portOnServer`
+
 ## Sample Scenarios
 
 Let's provide some sample scenarios:
@@ -67,3 +70,13 @@ On Client side:
 `./stcp2ws client https://aa.yourdomain.com 8088 yourCustomizedBearerToken 127.0.0.1:8080`
 
 Then you can access the website which is at http://127.0.0.1:8088 by using a browswer.
+
+(5) Suppose you have a host with ip as 192.168.1.15 with only http/https (80/443) port open, but you want to forward your dns udp requests to 8.8.8.8:53 through this host. Besides you want to make the access on the internet, so that you use Cloudflare as the CDN, we suppose the domain name is aa.yourdomain.com.
+
+On server side:
+`./stcp2ws server 80 yourCustomizedBearerToken`
+
+On Client side:
+`./stcp2ws udpclient https://aa.yourdomain.com 1053 yourCustomizedBearerToken 8.8.8.8:53`
+
+Then you run the nslookup command on your client machine as `nslookup -port=1053 www.google.com 127.0.0.1`
